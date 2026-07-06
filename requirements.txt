@@ -1,2 +1,2 @@
-python-telegram-bot>=21,<22
-anthropic>=0.40
+python-telegram-bot>=22,<22
+openai>=1.40

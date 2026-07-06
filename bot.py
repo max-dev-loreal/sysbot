@@ -2,34 +2,38 @@ import asyncio
 import os
 import subprocess
 
-from anthropic import AsyncAnthropic
-from telegram import Update 
+from openai import AsyncOpenAI
+from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
-# ---  CONFIG FOR A API CLAUDE  ---
-MODEL = "claude-haiku-4-5-20251001"
+# ---  CONFIG  ---
+BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+MODEL = "gemini-2.5-flash"
 MAX_TOKENS = 1024
 
 SYSTEM = (
-        "You are a monitoring assistant for a bare-metal Arch Linux Host, "
-        "operated by its owner via telegram.\n\n"
-        "You can act ONLY through the provided tools. You have no shell access "
-        "and cannot run arbitary commands. If a request needs an action that no "
-        "tool covers, say to plainly instead of pretending to do it.\n\n"
-        "Current capability:\n"
-        "- disk_usage: report filesystem usage (runs 'df -h'). Call it when the "
-        "user asks about disk space, free space, or how full the filesystem are.\n\n"
-        "When a tool returns output, summarize ot briefly and point out anything "
-        "notable (e.g a filesystem above ~90% used). Do not invent numbers that "
-        "are not in the tool output.\n\n"
-        "Reply in Russian. Be concise and practical."
+    "You are a monitoring assistant for a bare-metal Arch Linux host, "
+    "operated by its owner via Telegram.\n\n"
+    "You can act ONLY through the provided tools. You have no shell access "
+    "and cannot run arbitrary commands. If a request needs an action that no "
+    "tool covers, say so plainly instead of pretending to do it.\n\n"
+    "Current capability:\n"
+    "- disk_usage: report filesystem usage (runs 'df -h'). Call it when the "
+    "user asks about disk space, free space, or how full the filesystems are.\n\n"
+    "When a tool returns output, summarize it briefly and point out anything "
+    "notable (e.g. a filesystem above ~90% used). Do not invent numbers that "
+    "are not in the tool output.\n\n"
+    "Reply in Russian. Be concise and practical."
 )
 
 TOOLS = [
     {
-        "name": "disk_usage",
-        "description": "Check usage disk on a host ( runs 'df -h').",
-        "input_schema": {"type": "object", "properties": {}},
+        "type": "function",
+        "function": {
+            "name": "disk_usage",
+            "description": "Report filesystem usage (runs 'df -h'). No parameters.",
+            "parameters": {"type": "object", "properties": {}},
+        },
     }
 ]
 
@@ -37,19 +41,20 @@ ALLOWED_USERS = {
     int(uid) for uid in os.environ.get("ALLOWED_USER_IDS", "").split(",") if uid.strip()
 }
 
-client = AsyncAnthropic() 
+client = AsyncOpenAI(
+    api_key=os.environ["GEMINI_API_KEY"],
+    base_url=BASE_URL,
+)
 
-# ---  CONFIG FOR A API CLAUDE  ---
-
-# ---  ACTIONS (WHITELIST)  --- 
+# ---  ACTIONS (WHITELIST)  ---
 
 def _df() -> str:
-    try: 
+    try:
         proc = subprocess.run(
-                ["df", "-h"],
-                capture_output=True,
-                text=True,
-                timeout=10,
+            ["df", "-h"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except Exception as e:
         return f"error: {e}"
@@ -57,55 +62,49 @@ def _df() -> str:
 
 
 async def disk_usage() -> str:
-    return await  asyncio.to_thread(_df)
+    return await asyncio.to_thread(_df)
 
 
 ACTIONS = {"disk_usage": disk_usage}
 
-# ---  ACTIONS (WHITELIST)  ---
+# ---  LLM TOOL-USE LOOP  ---
 
-# --- CLAUDE TOOL-USE LOOP  ---
+async def ask_llm(user_text: str) -> str:
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": user_text},
+    ]
 
-async def ask_claude(user_text: str) -> str:
-    messages = [{"role": "user", "content": user_text}]
-
-    resp = await client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=SYSTEM,
-            tools=TOOLS,
-            messages=messages,
+    resp = await client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        tools=TOOLS,
+        max_tokens=MAX_TOKENS,
     )
+    msg = resp.choices[0].message
 
-    while resp.stop_reason == "tool_use":
-        messages.append({"role": "assistant", "content": resp.content})
-        result = []
-        for block in resp.content:
-            if block.type != "tool_use":
-                continue
-            action = ACTION.get(block.name)
-            output = await action() if action else f"unknown action: {block.name}"
-            results.append(
+    while msg.tool_calls:
+        messages.append(msg)
+        for tc in msg.tool_calls:
+            action = ACTIONS.get(tc.function.name)
+            output = await action() if action else f"unknown action: {tc.function.name}"
+            messages.append(
                 {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
+                    "role": "tool",
+                    "tool_call_id": tc.id,
                     "content": output,
                 }
-
-            )
-        messages.append({"role": "user", "content": results})
-
-        resp = await client.messages.create(
-                model=MODEL,
-                max_tokens=MAX+TOKENS,
-                system=SYSTEM,
-                tools=TOOLS,
-                messages=messages,
             )
 
-    return "".join(b.text for b in resp.content if b.type == "text") or "(empty)"
+        resp = await client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            tools=TOOLS,
+            max_tokens=MAX_TOKENS,
+        )
+        msg = resp.choices[0].message
 
-# ---  CLAUDE TOOL-USE LOOP  ---
+    return msg.content or "(empty)"
 
 # ---  TELEGRAM  ---
 
@@ -115,15 +114,13 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("⛔ Access denied")
         return
 
-    try: 
-        answer = await ask_claude(update.message.text or "")
+    try:
+        answer = await ask_llm(update.message.text or "")
     except Exception as e:
         answer = f"⚠️ Error: {e}"
     await update.message.reply_text(answer)
 
-# --- TELEGRAM ---
-
-# --- ENTRYPOINT --- 
+# ---  ENTRYPOINT  ---
 
 def main() -> None:
     token = os.environ["TELEGRAM_TOKEN"]
@@ -133,7 +130,6 @@ def main() -> None:
     app = Application.builder().token(token).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     app.run_polling()
-
 
 
 if __name__ == "__main__":
