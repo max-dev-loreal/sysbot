@@ -6,7 +6,7 @@ from anthropic import AsyncAnthropic
 from telegram import Update 
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
-#CONFIG FOR A API CLAUDE
+# ---  CONFIG FOR A API CLAUDE  ---
 MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 1024
 
@@ -39,4 +39,27 @@ ALLOWED_USERS = {
 
 client = AsyncAnthropic() 
 
+# ---  CONFIG FOR A API CLAUDE  ---
 
+# ---  ACTIONS (WHITELIST)  --- 
+
+def _df() -> str:
+    try: 
+        proc = subprocess.run(
+                ["df", "-h"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+        )
+    except Exception as e:
+        return f"error: {e}"
+    return proc.stdout if proc.returncode == 0 else f"error: {proc.stderr.strip()}"
+
+
+async def disk_usage() -> str:
+    return await  asyncio.to_thread(_df)
+
+
+ACTIONS = {"disk_usage": disk_usage}
+
+# ---  ACTIONS (WHITELIST)  ---
