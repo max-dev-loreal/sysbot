@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -6,7 +7,7 @@ from typing import Awaitable, Callable
 
 from openai import AsyncOpenAI
 from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 # ---  CONFIG  ---
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -81,6 +82,14 @@ REGISTRY: dict[str, Action] = {
     "top_procs": Action(name="top_procs", description="Top processes by CPU. No parameters.", func=top_procs),
 }
 
+COMMANDS = {
+    "disk": "disk_usage",
+    "mem": "memory",
+    "uptime": "uptime",
+    "docker": "docker_ps",
+    "top": "top_procs",
+}
+
 TOOLS = [
     {
         "type": "function",
@@ -132,7 +141,33 @@ async def ask_llm(user_text: str) -> str:
 
     return msg.content or "(empty)"
 
+
 # ---  TELEGRAM  ---
+def _allowed(update: Update) -> bool:
+    user = update.effective_user
+    return user is not None and user.id in ALLOWED_USERS
+
+
+async def run_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Access denied")
+        return
+
+    name = update.message.text.lstrip("/").split("@")[0].split()[0]
+    action_name = COMMANDS.get(name)
+    entry = REGISTRY.get(action_name) if action_name else None
+    if entry is None:
+        await update.message.reply_text(f"❓ Unknown command: /{name}")
+        return
+
+    try:
+        output = await entry.func()
+    except Exception as e:
+        output = f"⚠️ Error: {e}"
+    await update.message.reply_text(
+        f"<pre>{html.escape(output)}</pre>",
+        parse_mode="HTML",
+    )
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -158,6 +193,8 @@ def main() -> None:
         raise SystemExit("ALLOWED_USER_IDS empty — refusing to start")
 
     app = Application.builder().token(token).build()
+    for cmd in COMMANDS:
+        app.add_handler(CommandHandler(cmd, run_action))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     app.run_polling()
 
