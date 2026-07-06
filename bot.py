@@ -122,3 +122,19 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(answer)
 
 # --- TELEGRAM ---
+
+# --- ENTRYPOINT --- 
+
+def main() -> None:
+    token = os.environ["TELEGRAM_TOKEN"]
+    if not ALLOWED_USERS:
+        raise SystemExit("ALLOWED_USER_IDS empty — refusing to start")
+
+    app = Application.builder().token(token).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.run_polling()
+
+
+
+if __name__ == "__main__":
+    main()
