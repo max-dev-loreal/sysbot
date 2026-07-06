@@ -106,3 +106,19 @@ async def ask_claude(user_text: str) -> str:
     return "".join(b.text for b in resp.content if b.type == "text") or "(empty)"
 
 # ---  CLAUDE TOOL-USE LOOP  ---
+
+# ---  TELEGRAM  ---
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if user is None or user.id not in ALLOWED_USERS:
+        await update.message.reply_text("⛔ Access denied")
+        return
+
+    try: 
+        answer = await ask_claude(update.message.text or "")
+    except Exception as e:
+        answer = f"⚠️ Error: {e}"
+    await update.message.reply_text(answer)
+
+# --- TELEGRAM ---
