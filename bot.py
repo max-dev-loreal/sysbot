@@ -1,6 +1,8 @@
 import asyncio
 import os
 import subprocess
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable
 
 from openai import AsyncOpenAI
 from telegram import Update
@@ -8,7 +10,16 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 # ---  CONFIG  ---
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-MODEL = "gemini-2.5-flash"
+
+@dataclass
+class Action:
+    name: str
+    description: str
+    func: Callable[[], Awaitable[str]]
+    tier: str = "safe"
+    freshness: int = 60
+    parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {}})
+MODEL = "gemini-2.5-flash-lite"
 MAX_TOKENS = 1024
 
 SYSTEM = (
@@ -26,17 +37,6 @@ SYSTEM = (
     "Reply in Russian. Be concise and practical."
 )
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "disk_usage",
-            "description": "Report filesystem usage (runs 'df -h'). No parameters.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
-]
-
 ALLOWED_USERS = {
     int(uid) for uid in os.environ.get("ALLOWED_USER_IDS", "").split(",") if uid.strip()
 }
@@ -48,24 +48,50 @@ client = AsyncOpenAI(
 
 # ---  ACTIONS (WHITELIST)  ---
 
-def _df() -> str:
+def _run(cmd: list[str], timeout: int = 10) -> str:
     try:
-        proc = subprocess.run(
-            ["df", "-h"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except Exception as e:
         return f"error: {e}"
     return proc.stdout if proc.returncode == 0 else f"error: {proc.stderr.strip()}"
 
 
 async def disk_usage() -> str:
-    return await asyncio.to_thread(_df)
+    return await asyncio.to_thread(_run, ["df", "-h"])
+
+async def memory() -> str:
+    return await asyncio.to_thread(_run, ["free", "-h"])
+
+async def uptime() -> str:
+    return await asyncio.to_thread(_run, ["uptime"])
+
+async def docker_ps() -> str:
+    return await asyncio.to_thread(_run, ["docker", "ps", "--format", "table {{.Names}}\t{{.Status}}\t{{.Image}}"])
+
+async def top_procs() -> str:
+    out = await asyncio.to_thread(_run, ["ps", "-eo", "pid,comm,%cpu,%mem", "--sort=-%cpu"])
+    return "\n".join(out.splitlines()[:16])
 
 
-ACTIONS = {"disk_usage": disk_usage}
+REGISTRY: dict[str, Action] = {
+    "disk_usage": Action(name="disk_usage", description="Filesystem usage ('df -h'). No parameters.", func=disk_usage),
+    "memory": Action(name="memory", description="RAM and swap usage ('free -h'). No parameters.", func=memory),
+    "uptime": Action(name="uptime", description="Uptime and load average. No parameters.", func=uptime),
+    "docker_ps": Action(name="docker_ps", description="Running Docker containers. No parameters.", func=docker_ps),
+    "top_procs": Action(name="top_procs", description="Top processes by CPU. No parameters.", func=top_procs),
+}
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": a.name,
+            "description": a.description,
+            "parameters": a.parameters,
+        },
+    }
+    for a in REGISTRY.values()
+]
 
 # ---  LLM TOOL-USE LOOP  ---
 
@@ -86,8 +112,8 @@ async def ask_llm(user_text: str) -> str:
     while msg.tool_calls:
         messages.append(msg)
         for tc in msg.tool_calls:
-            action = ACTIONS.get(tc.function.name)
-            output = await action() if action else f"unknown action: {tc.function.name}"
+            entry = REGISTRY.get(tc.function.name)
+            output = await entry.func() if entry else f"unknown action: {tc.function.name}"
             messages.append(
                 {
                     "role": "tool",
@@ -117,7 +143,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         answer = await ask_llm(update.message.text or "")
     except Exception as e:
-        answer = f"⚠️ Error: {e}"
+        msg = str(e)
+        if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            answer = "⏳ Лимит запросов исчерпан, подожди минуту."
+        else:
+            answer = f"⚠️ Error: {e}"
     await update.message.reply_text(answer)
 
 # ---  ENTRYPOINT  ---
