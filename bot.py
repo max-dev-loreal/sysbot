@@ -63,3 +63,46 @@ async def disk_usage() -> str:
 ACTIONS = {"disk_usage": disk_usage}
 
 # ---  ACTIONS (WHITELIST)  ---
+
+# --- CLAUDE TOOL-USE LOOP  ---
+
+async def ask_claude(user_text: str) -> str:
+    messages = [{"role": "user", "content": user_text}]
+
+    resp = await client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=SYSTEM,
+            tools=TOOLS,
+            messages=messages,
+    )
+
+    while resp.stop_reason == "tool_use":
+        messages.append({"role": "assistant", "content": resp.content})
+        result = []
+        for block in resp.content:
+            if block.type != "tool_use":
+                continue
+            action = ACTION.get(block.name)
+            output = await action() if action else f"unknown action: {block.name}"
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": output,
+                }
+
+            )
+        messages.append({"role": "user", "content": results})
+
+        resp = await client.messages.create(
+                model=MODEL,
+                max_tokens=MAX+TOKENS,
+                system=SYSTEM,
+                tools=TOOLS,
+                messages=messages,
+            )
+
+    return "".join(b.text for b in resp.content if b.type == "text") or "(empty)"
+
+# ---  CLAUDE TOOL-USE LOOP  ---
