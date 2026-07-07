@@ -1,5 +1,7 @@
 import asyncio
 import html
+import sqlite3
+import time
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -11,6 +13,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 # ---  CONFIG  ---
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+DB_PATH = "/home/max/sysbot/data/sysbot.db"
 
 @dataclass
 class Action:
@@ -46,6 +49,58 @@ client = AsyncOpenAI(
     api_key=os.environ["GEMINI_API_KEY"],
     base_url=BASE_URL,
 )
+
+# ---  DB (history + freshness)  ---
+
+def db_init() -> None:
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_name TEXT    NOT NULL,
+                output      TEXT    NOT NULL,
+                ts          INTEGER NOT NULL
+            )
+            """
+        )
+
+def db_log(action_name: str, output: str) -> None:
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute(
+            "INSERT INTO history (action_name, output, ts) VALUES (?, ?, ?)",
+            (action_name, output, int(time.time())),
+        )
+
+def db_fresh(action_name: str, freshness: int) -> str | None:
+    with sqlite3.connect(DB_PATH) as con:
+        row = con.execute(
+            "SELECT output, ts FROM history "
+            "WHERE action_name = ? ORDER BY ts DESC LIMIT 1",
+            (action_name,),
+        ).fetchone()
+
+    if row is None:
+        return None
+    output, ts = row
+    if int(time.time()) - ts <= freshness:
+        return output
+    return None
+
+
+async def call_action(name: str, use_cache: bool) -> tuple[str, bool]:
+    entry = REGISTRY.get(name)
+    if entry is None:
+        return f"unknown action: {name}", False
+
+    if use_cache:
+        cached = db_fresh(name, entry.freshness)
+        if cached is not None:
+            return cached, True   
+
+    output = await entry.func()
+    db_log(name, output)
+    return output, False
 
 # ---  ACTIONS (WHITELIST)  ---
 
@@ -122,7 +177,7 @@ async def ask_llm(user_text: str) -> str:
         messages.append(msg)
         for tc in msg.tool_calls:
             entry = REGISTRY.get(tc.function.name)
-            output = await entry.func() if entry else f"unknown action: {tc.function.name}"
+            output, _ = await call_action(tc.function.name, use_cache=True)
             messages.append(
                 {
                     "role": "tool",
@@ -161,7 +216,7 @@ async def run_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     try:
-        output = await entry.func()
+        output, _ = await call_action(action_name, use_cache=False)
     except Exception as e:
         output = f"⚠️ Error: {e}"
     await update.message.reply_text(
@@ -188,6 +243,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---  ENTRYPOINT  ---
 
 def main() -> None:
+    db_init()
     token = os.environ["TELEGRAM_TOKEN"]
     if not ALLOWED_USERS:
         raise SystemExit("ALLOWED_USER_IDS empty — refusing to start")
