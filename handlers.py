@@ -23,8 +23,8 @@ TIER_LABELS = {
     "destructive": "🔥 Опасные",
 }
 
-# token → (action_name, user_id, created_at)
-PENDING: dict[str, tuple[str, int, float]] = {}
+# token → (action_name, arg, user_id, created_at)   arg is None for no-arg actions
+PENDING: dict[str, tuple[str, str | None, int, float]] = {}
 CONFIRM_TTL = 60
 
 
@@ -54,28 +54,39 @@ async def run_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _allowed(update):
         await update.message.reply_text("⛔ Access denied")
         return
-    name = update.message.text.lstrip("/").split("@")[0].split()[0]
+    parts = update.message.text.lstrip("/").split()
+    name = parts[0].split("@")[0]
     action_name = COMMANDS.get(name)
     entry = REGISTRY.get(action_name) if action_name else None
     if entry is None:
         await update.message.reply_text(f"❓ Unknown command: /{name}")
         return
 
+    arg = None
+    if entry.param:
+        if len(parts) < 2:
+            await update.message.reply_text("⚠️ Укажи имя контейнера, напр. /{cmd} hello-web".format(cmd=name))
+            return
+        arg = parts[1]
+
     if entry.tier != "safe":
         token = secrets.token_hex(8)
-        PENDING[token] = (action_name, update.effective_user.id, time.time())
+        PENDING[token] = (action_name, arg, update.effective_user.id, time.time())
+        label = entry.help or action_name
+        if arg:
+            label = f"{label}: {arg}"
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok:{token}"),
             InlineKeyboardButton("❌ Отмена", callback_data=f"no:{token}"),
         ]])
         await update.message.reply_text(
-            f"⚠️ Подтверди действие: {entry.help or action_name}",
+            f"⚠️ Подтверди действие: {label}",
             reply_markup=keyboard,
         )
         return
 
     try:
-        output, _ = await call_action(action_name, use_cache=False)
+        output, _ = await call_action(action_name, use_cache=False, arg=arg)
     except Exception as e:
         output = f"⚠️ Error: {e}"
     await update.message.reply_text(
@@ -93,7 +104,7 @@ async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if pending is None:
         await query.edit_message_text("⏳ Запрос устарел")
         return
-    action_name, user_id, created = pending
+    action_name, arg, user_id, created = pending
     if query.from_user.id != user_id:
         await query.edit_message_text("⛔ Не твой запрос")
         return
@@ -105,7 +116,7 @@ async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     try:
-        output, _ = await call_action(action_name, use_cache=False)
+        output, _ = await call_action(action_name, use_cache=False, arg=arg)
     except Exception as e:
         output = f"⚠️ Error: {e}"
     await query.edit_message_text(
