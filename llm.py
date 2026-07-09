@@ -20,7 +20,6 @@ async def ask_llm(user_text: str) -> str:
     while msg.tool_calls:
         messages.append(msg)
         for tc in msg.tool_calls:
-            entry = REGISTRY.get(tc.function.name)
             output, _ = await call_action(tc.function.name, use_cache=True)
             messages.append(
                 {
