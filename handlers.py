@@ -17,6 +17,14 @@ def _allowed(update: Update) -> bool:
     return user is not None and user.id in ALLOWED_USERS
 
 
+def _proc_name(pid_str: str) -> str:
+    try:
+        with open(f"/proc/{int(pid_str)}/comm") as f:
+            return f.read().strip()
+    except Exception:
+        return "?"
+
+
 TIER_LABELS = {
     "safe": "📊 Мониторинг",
     "dangerous": "⚠️ Управление",
@@ -65,22 +73,30 @@ async def run_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     arg = None
     if entry.param:
         if len(parts) < 2:
-            await update.message.reply_text("⚠️ Укажи имя контейнера, напр. /{cmd} hello-web".format(cmd=name))
+            if action_name == "kill_proc":
+                hint = "⚠️ Укажи PID, напр. /kill 12345"
+            else:
+                hint = "⚠️ Укажи имя контейнера, напр. /{cmd} hello-web".format(cmd=name)
+            await update.message.reply_text(hint)
             return
         arg = parts[1]
 
     if entry.tier != "safe":
         token = secrets.token_hex(8)
         PENDING[token] = (action_name, arg, update.effective_user.id, time.time())
-        label = entry.help or action_name
-        if arg:
-            label = f"{label}: {arg}"
+        if action_name == "kill_proc":
+            text = f"⚠️ Убить процесс {arg} ({_proc_name(arg)})?"
+        else:
+            label = entry.help or action_name
+            if arg:
+                label = f"{label}: {arg}"
+            text = f"⚠️ Подтверди действие: {label}"
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok:{token}"),
             InlineKeyboardButton("❌ Отмена", callback_data=f"no:{token}"),
         ]])
         await update.message.reply_text(
-            f"⚠️ Подтверди действие: {label}",
+            text,
             reply_markup=keyboard,
         )
         return

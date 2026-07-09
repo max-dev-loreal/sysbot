@@ -1,4 +1,6 @@
 import asyncio
+import os
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
@@ -88,6 +90,39 @@ async def docker_restart(name: str) -> str:
     return out if out.startswith("error:") else f"✅ {name} перезапущен"
 
 
+MIN_KILLABLE_PID = 100
+
+
+async def kill_proc(pid_str: str) -> str:
+    # Validation lives HERE so no call path (command or otherwise) can bypass it.
+    # 1. is it a number?
+    if not pid_str.isdigit():
+        return f"error: '{pid_str}' — не PID (нужно число)"
+    pid = int(pid_str)
+    # 2. not a critical system PID?
+    if pid < MIN_KILLABLE_PID:
+        return f"error: PID {pid} защищён (< {MIN_KILLABLE_PID}), убивать нельзя"
+    # 3. does it exist? signal 0 sends nothing, only probes existence/permission
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return f"error: процесса {pid} нет"
+    except PermissionError:
+        return f"error: нет прав на процесс {pid} (чужой процесс)"
+    # 4. graceful: SIGTERM -> wait -> SIGKILL if still alive
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception as e:
+        return f"error: {e}"
+    await asyncio.sleep(3)
+    try:
+        os.kill(pid, 0)  # still alive?
+        os.kill(pid, signal.SIGKILL)  # finish it off
+        return f"✅ процесс {pid} убит (SIGKILL после SIGTERM)"
+    except ProcessLookupError:
+        return f"✅ процесс {pid} завершён (SIGTERM)"
+
+
 async def containers() -> str:
     lines = []
     for name in sorted(ALLOWED_CONTAINERS):
@@ -116,6 +151,7 @@ REGISTRY: dict[str, Action] = {
     "docker_start": Action(name="docker_start", description="Start a whitelisted Docker container.", func=docker_start, tier="dangerous", param=True, help="запустить контейнер"),
     "docker_stop": Action(name="docker_stop", description="Stop a whitelisted Docker container.", func=docker_stop, tier="dangerous", param=True, help="остановить контейнер"),
     "docker_restart": Action(name="docker_restart", description="Restart a whitelisted Docker container.", func=docker_restart, tier="dangerous", param=True, help="перезапустить контейнер"),
+    "kill_proc": Action(name="kill_proc", description="Kill a process by PID (graceful).", func=kill_proc, tier="dangerous", param=True, help="убить процесс по PID"),
 }
 
 COMMANDS = {
@@ -129,6 +165,7 @@ COMMANDS = {
     "docker_start": "docker_start",
     "docker_stop": "docker_stop",
     "docker_restart": "docker_restart",
+    "kill": "kill_proc",
 }
 
 # Param actions are excluded: the LLM path calls func() with no argument, and
