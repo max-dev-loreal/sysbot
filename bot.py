@@ -5,7 +5,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from config import ALLOWED_USERS
 from db import db_init
 from actions import COMMANDS
-from handlers import handle, run_action
+from handlers import handle, help_cmd, run_action
+
 
 # ---  ENTRYPOINT  ---
 
@@ -16,6 +17,7 @@ def main() -> None:
         raise SystemExit("ALLOWED_USER_IDS empty — refusing to start")
 
     app = Application.builder().token(token).build()
+    app.add_handler(CommandHandler("help", help_cmd))
     for cmd in COMMANDS:
         app.add_handler(CommandHandler(cmd, run_action))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))

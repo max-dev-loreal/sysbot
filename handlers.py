@@ -7,24 +7,53 @@ from config import ALLOWED_USERS
 from actions import COMMANDS, REGISTRY, call_action
 from llm import ask_llm
 
+
 # ---  TELEGRAM  ---
+
 def _allowed(update: Update) -> bool:
     user = update.effective_user
     return user is not None and user.id in ALLOWED_USERS
+
+
+TIER_LABELS = {
+    "safe": "📊 Мониторинг",
+    "dangerous": "⚠️ Управление",
+    "destructive": "🔥 Опасные",
+}
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Access denied")
+        return
+
+    groups: dict[str, list[str]] = {"safe": [], "dangerous": [], "destructive": []}
+    for cmd, action_name in COMMANDS.items():
+        entry = REGISTRY.get(action_name)
+        if entry is None:
+            continue
+        groups[entry.tier].append(f"/{cmd} — {entry.help}")
+
+    lines = ["<b>Команды sysbot:</b>"]
+    for tier in ("safe", "dangerous", "destructive"):
+        if groups[tier]:
+            lines.append(f"\n<b>{TIER_LABELS[tier]}</b>")
+            lines.extend(groups[tier])
+    lines.append("\n/help — этот список")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def run_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _allowed(update):
         await update.message.reply_text("⛔ Access denied")
         return
-
     name = update.message.text.lstrip("/").split("@")[0].split()[0]
     action_name = COMMANDS.get(name)
     entry = REGISTRY.get(action_name) if action_name else None
     if entry is None:
         await update.message.reply_text(f"❓ Unknown command: /{name}")
         return
-
     try:
         output, _ = await call_action(action_name, use_cache=False)
     except Exception as e:
@@ -34,12 +63,12 @@ async def run_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         parse_mode="HTML",
     )
 
+
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if user is None or user.id not in ALLOWED_USERS:
         await update.message.reply_text("⛔ Access denied")
         return
-
     try:
         answer = await ask_llm(update.message.text or "")
     except Exception as e:
