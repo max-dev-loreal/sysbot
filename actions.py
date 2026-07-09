@@ -56,6 +56,12 @@ async def top_procs() -> str:
     out = await asyncio.to_thread(_run, ["ps", "-eo", "pid,comm,%cpu,%mem", "--sort=-%cpu"])
     return "\n".join(out.splitlines()[:16])
 
+async def restart_nginx() -> str:
+    out = await asyncio.to_thread(_run, ["systemctl", "restart", "nginx"])
+    if out.startswith("error:"):
+        return out
+    return "✅ nginx перезапущен"
+
 
 REGISTRY: dict[str, Action] = {
     "disk_usage": Action(name="disk_usage", description="Filesystem usage ('df -h'). No parameters.", func=disk_usage, help="использование диска"),
@@ -63,6 +69,7 @@ REGISTRY: dict[str, Action] = {
     "uptime": Action(name="uptime", description="Uptime and load average. No parameters.", func=uptime, help="аптайм и нагрузка"),
     "docker_ps": Action(name="docker_ps", description="Running Docker containers. No parameters.", func=docker_ps, help="запущенные контейнеры"),
     "top_procs": Action(name="top_procs", description="Top processes by CPU. No parameters.", func=top_procs, help="топ процессов по CPU"),
+    "restart_nginx": Action(name="restart_nginx", description="Restart the nginx service.", func=restart_nginx, tier="dangerous", help="перезапустить nginx"),
 }
 
 COMMANDS = {
@@ -71,6 +78,7 @@ COMMANDS = {
     "uptime": "uptime",
     "docker": "docker_ps",
     "top": "top_procs",
+    "restart_nginx": "restart_nginx",
 }
 
 TOOLS = [

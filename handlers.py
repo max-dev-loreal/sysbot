@@ -1,6 +1,8 @@
 import html
+import secrets
+import time
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import ALLOWED_USERS
@@ -20,6 +22,10 @@ TIER_LABELS = {
     "dangerous": "⚠️ Управление",
     "destructive": "🔥 Опасные",
 }
+
+# token → (action_name, user_id, created_at)
+PENDING: dict[str, tuple[str, int, float]] = {}
+CONFIRM_TTL = 60
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -54,11 +60,55 @@ async def run_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if entry is None:
         await update.message.reply_text(f"❓ Unknown command: /{name}")
         return
+
+    if entry.tier != "safe":
+        token = secrets.token_hex(8)
+        PENDING[token] = (action_name, update.effective_user.id, time.time())
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok:{token}"),
+            InlineKeyboardButton("❌ Отмена", callback_data=f"no:{token}"),
+        ]])
+        await update.message.reply_text(
+            f"⚠️ Подтверди действие: {entry.help or action_name}",
+            reply_markup=keyboard,
+        )
+        return
+
     try:
         output, _ = await call_action(action_name, use_cache=False)
     except Exception as e:
         output = f"⚠️ Error: {e}"
     await update.message.reply_text(
+        f"<pre>{html.escape(output)}</pre>",
+        parse_mode="HTML",
+    )
+
+
+async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    decision, _, token = query.data.partition(":")
+    pending = PENDING.pop(token, None)
+
+    if pending is None:
+        await query.edit_message_text("⏳ Запрос устарел")
+        return
+    action_name, user_id, created = pending
+    if query.from_user.id != user_id:
+        await query.edit_message_text("⛔ Не твой запрос")
+        return
+    if time.time() - created > CONFIRM_TTL:
+        await query.edit_message_text("⏳ Запрос устарел")
+        return
+    if decision == "no":
+        await query.edit_message_text("❌ Отменено")
+        return
+
+    try:
+        output, _ = await call_action(action_name, use_cache=False)
+    except Exception as e:
+        output = f"⚠️ Error: {e}"
+    await query.edit_message_text(
         f"<pre>{html.escape(output)}</pre>",
         parse_mode="HTML",
     )
